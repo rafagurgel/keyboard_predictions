@@ -1,0 +1,394 @@
+---
+title: "Milestone Report #01"
+author: "Rafael Gurgel"
+date: "14/02/2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(tibble)
+library(tidyr)
+library(tidytext)
+library(ggplot2)
+library(quanteda)
+library(knitr)
+library(kableExtra)
+library(cld2)
+library(cld3)
+library(tm)
+library(ggraph)
+library(igraph)
+
+source('profanity.R')
+source('foreign_filter.R')
+
+knit_hooks$set(plot = function(x, options) {
+  paste('<figure><center><b><figcaption>', options$fig.cap, '</figcaption></center></b><img src="',
+        opts_knit$get('base.url'), paste(x, collapse = '.'),
+        '"></figure>',
+        sep = '')
+})
+```
+
+## Introduction
+
+This report is part of the last module of Data Science specialization from Coursera. You can check the .rmd source on my [github account](https://github.com/rafagurgel/keyboard_predictions/tree/master/ExploratoryData) The project (final) goal is to build text prediction models from a dataset based on Twitter, blogs and news. This preliminar report explores the data available [here](https://d396qusza40orc.cloudfront.net/dsscapstone/dataset/Coursera-SwiftKey.zip). This file contains data from 4 different languages (divided in 4 different folders). We're going to analyse only the English dataset.
+
+## Exploratory analysis
+
+The exploratory analysis is made using ``tidytext`` and ``quanteda`` because their easy of use and capacity to tidy the data. The first step is loading the data.
+
+```{r loading, cache = TRUE, warning=FALSE, echo = FALSE}
+setwd("~/Documents/Courses/Data Science 10 - Capstone")
+path<- as_tibble(t(sapply(c("blogs","news","twitter"),(function(x){paste0("data/en_US/en_US.",x,".txt")}))))
+
+con <- lapply(path,file, "r")
+text.data <- lapply(con,readLines,1000)
+invisible(lapply(con,close))
+
+text.data<-data_frame(Source = rep(names(text.data), sapply(text.data, length)),
+                      Line = unlist(text.data))%>%
+    filter(Line%>%is.english())
+```
+
+We summarize the lines (text sample) from the dataset loaded, by the total of sentences, words(tokens) and unique words (types). The expected size of this variables by sample (line) are also calculated using the mean.
+```{r summarizing, echo = FALSE}
+text.summary <- text.data%>%
+    mutate(Sentence = nsentence(Line),
+           Token = ntoken(Line),
+           Type = ntype(Line))
+text.summary%>%
+    group_by(Source)%>%
+    summarize(Lines = n(),
+              `Sentences (total)` = sum(Sentence), 
+              `Sentences (mean)` = mean(Sentence),
+              `Words (total)` = sum(Token),
+              `Words (mean)`= mean(Token),
+              `Unique words by line (total)` = sum(Type),
+              `Unique words by line (mean)` = mean(Type))%>%
+    kable("html") %>%
+    kable_styling(bootstrap_options = c("striped", "condensed","bordered"),full_width = F)
+```
+
+Using histograms we can also check the distribution of the sentences, tokens and types in each sample.
+
+```{r histogram1, echo = FALSE, fig.width=12, fig.cap= 'Sentences in a sample'}
+text.summary%>%
+    ggplot(aes(x = Sentence))+
+    geom_histogram(binwidth = 1)+
+    facet_grid(~ Source)+
+    theme_bw()
+```
+
+```{r histogram2, echo = FALSE, fig.width=12, fig.cap= 'Tokens in a sample'}
+text.summary%>%
+    ggplot(aes(x = Token))+
+    geom_histogram(binwidth = 2)+
+    facet_grid(~ Source)+
+    theme_bw()
+```
+
+```{r histogram3,echo = FALSE, fig.width=12, fig.cap= 'Unique words in a sample'}
+text.summary%>%
+    ggplot(aes(x = Type))+
+    geom_histogram(binwidth = 2)+
+    facet_grid(~ Source)+
+    theme_bw()
+```
+
+### Words Frequency
+
+We'll analyse the words individually, and also counting
+
+```{r frequency, echo = FALSE}
+ngram1.by_source <- text.data %>%
+    unnest_tokens(Word, Line, token = "ngrams", collapse = FALSE, n = 1)%>%
+    group_by(Word,Source)%>%
+    summarize(Frequency = n())%>%
+    arrange(desc(Frequency))#%>%
+    #filter(grepl("^[A-Za-z]+'?[A-Za-z]+$",Word))
+ngram1.all_sources <- ngram1.by_source%>%
+    group_by(Word)%>%
+    summarize(Frequency = sum(Frequency))%>%
+    arrange(desc(Frequency))
+
+top10<-ngram1.all_sources %>%
+    #filter(is.clean(.$Word))%>%
+    (function(x){x[1:10,]})
+ngram1.by_source%>%
+    filter(Word %in% top10$Word)%>%
+    spread(Source,Frequency)%>%
+    inner_join(top10,by = 'Word')%>%
+    select(c(Word,Frequency,blogs,news,twitter))%>%
+    rename(Total = Frequency, Blogs = blogs, News = news, Twitter = twitter)%>%
+    arrange(desc(Total))%>%
+    kable("html") %>%
+    kable_styling(bootstrap_options = c("striped", "condensed","bordered"),full_width = T)
+```
+
+#### Filters
+##### Profanity filter
+
+In order to provide decent suggestions, a profanity filter was developed trying to remove some bad words. The 10 most frequent indecent words found was
+
+```{r profanity, echo = FALSE}
+top10.prof<-ngram1.all_sources %>%
+    (function(x){x[!is.clean(x$Word),]})%>%
+    (function(x){x[1:10,]})
+ngram1.by_source%>%
+    filter(Word %in% top10.prof$Word)%>%
+    spread(Source,Frequency)%>%
+    inner_join(top10.prof,by = 'Word')%>%
+    select(c(Word,Frequency,blogs,news,twitter))%>%
+    rename(Total = Frequency, Blogs = blogs, News = news, Twitter = twitter)%>%
+    arrange(desc(Total))%>%
+    mutate_all(funs(replace(., is.na(.), 0)))%>%
+    kable("html") %>%
+    kable_styling(bootstrap_options = c("striped", "condensed","bordered"),full_width = T)
+
+# Filtering
+ngram1.by_source<- ngram1.by_source%>%
+    (function(x){x[is.clean(x$Word),]})
+ngram1.all_sources <- ngram1.by_source%>%
+    group_by(Word)%>%
+    summarize(Frequency = sum(Frequency))%>%
+    arrange(desc(Frequency))
+    
+```
+
+The filter is quite inflexible with some words variations. I selected the news texts where there's one bad word (or part of it) identified.
+
+```{r profanews, echo = FALSE}
+text.data%>%
+    filter(Source == 'news')%>%
+    select(Line)%>%
+    (function(x){x[!is.clean(x$Line),]})%>%
+    data.frame()%>%
+    rename(News = Line)%>%
+    head(10)%>%
+    kable("html") %>%
+    kable_styling(bootstrap_options = c("condensed","bordered"),full_width = T)
+```
+
+There are obviously some mismatches but I prefer to be more conservative and miss a few predictions (that's looks so specific) than being more liberal and maybe suggesting something nasty. Only the profane words will be removed and not the full text (something similar will be done in the future when we consider de n-grams, removing only the n-grams containing one bad word).
+
+##### Foreign words filtering
+
+The foreign words filter will work in two levels. The first one was applying after loading the data, getting only english-identified phrases, using the packages ``cld2`` and ``cld3``. In the word levels we search for non-ascii characters, discarding the following words.
+```{r foreignwords, echo = FALSE}
+ngram1.by_source%>%filter(!Word%>%is.ascii())%>%
+    kable("html") %>%
+    kable_styling(bootstrap_options = c("condensed","bordered"),full_width = T)
+
+ngram1.by_source <- ngram1.by_source%>%filter(Word%>%is.ascii())
+ngram1.all_sources <- ngram1.all_sources%>%filter(Word%>%is.ascii())
+```
+
+##### Non letters/numbers words
+Words not containing any letters will be discarted.
+```{r nonletter, echo = FALSE}
+n0 <- dim(ngram1.by_source)[1]
+ngram1.by_source <- ngram1.by_source %>%
+    filter(grepl("[A-Za-z]",Word))
+ngram1.all_sources<- ngram1.all_sources%>%
+    filter(grepl("[A-Za-z]",Word))
+n1 <- dim(ngram1.by_source)[1]
+```
+
+In this part `r n0-n1` different  "words" were removed.
+
+##### Websites
+Finally we'll remove websites
+```{r websites, echo = FALSE}
+n0 <- dim(ngram1.by_source)[1]
+ngram1.by_source <- ngram1.by_source %>%
+    filter(!grepl("www\\..+\\.",Word))
+ngram1.all_sources<- ngram1.all_sources%>%
+    filter(!grepl("http:\\..+\\.",Word))
+n1 <- dim(ngram1.by_source)[1]
+```
+
+In this part `r n0-n1` different websites were removed.
+
+### Influence
+
+```{r influentwords, echo = FALSE}
+w50<- ngram1.all_sources%>%
+    mutate(Influence = 100*Frequency/sum(Frequency))%>%
+    mutate(Influence.Combined = cumsum(Influence))%>%
+    filter(Influence.Combined < 50)%>%
+    (function(x){dim(x)[1]+1})
+
+w90<- ngram1.all_sources%>%
+    mutate(Influence = 100*Frequency/sum(Frequency))%>%
+    mutate(Influence.Combined = cumsum(Influence))%>%
+    filter(Influence.Combined < 90)%>%
+    (function(x){dim(x)[1]+1})
+```
+
+To cover 50% and 90% of the words we'll respectively need `r w50` and `r w90` words. This is due to high frequency words like "the", "to", "and". In this case the new more frequent words are the following
+```{r influentwords_table, echo = FALSE}
+ngram1.all_sources <- ngram1.all_sources%>%
+    filter(!(Word %in% stop_words$word))
+ngram1.by_source <- ngram1.by_source%>%
+    filter(!(Word %in% stop_words$word))
+
+top10 <- ngram1.all_sources %>%
+    (function(x){x[1:10,]})
+ngram1.by_source%>%
+    filter(Word %in% top10$Word)%>%
+    spread(Source,Frequency)%>%
+    inner_join(top10,by = 'Word')%>%
+    select(c(Word,Frequency,blogs,news,twitter))%>%
+    rename(Total = Frequency, Blogs = blogs, News = news, Twitter = twitter)%>%
+    arrange(desc(Total))%>%
+    mutate_all(funs(replace(., is.na(.), 0)))%>%
+    kable("html") %>%
+    kable_styling(bootstrap_options = c("striped", "condensed","bordered"),full_width = T)
+
+w50<- ngram1.all_sources%>%
+    mutate(Influence = 100*Frequency/sum(Frequency))%>%
+    mutate(Influence.Combined = cumsum(Influence))%>%
+    filter(Influence.Combined < 50)%>%
+    (function(x){dim(x)[1]+1})
+
+w90<- ngram1.all_sources%>%
+    mutate(Influence = 100*Frequency/sum(Frequency))%>%
+    mutate(Influence.Combined = cumsum(Influence))%>%
+    filter(Influence.Combined < 90)%>%
+    (function(x){dim(x)[1]+1})
+```
+
+We can also check the coverage ignoring those "stopwords". In this case, we'll need `r w50` and `r w90` words to cover 50% and 90% of all instances.
+
+#### Words Pairs
+
+In order to predict words we group the words in pairs (2-grams) to define a word probability given another one. This analysis may be done also in a bigger group of words for example triples (3-grams), extending to n groups (n-grams).
+
+```{r 2gram, echo = FALSE}
+ngram2.by_source <- text.data %>%
+    unnest_tokens(Word, Line, token = "ngrams", collapse = FALSE, n = 2)%>%
+    group_by(Word,Source)%>%
+    summarize(Frequency = n())%>%
+    arrange(desc(Frequency))
+
+# Filtering
+ngram2 <- ngram2.by_source%>%
+    separate(Word, c("Word1", "Word2"), sep = " ")%>%
+    select(c("Word1", "Word2"))
+
+clean.words <- as.logical(apply(sapply(ngram2,is.clean),1,prod))
+ascii.words <- as.logical(apply(sapply(ngram2,is.ascii),1,prod))
+letter.words <- as.logical(apply(sapply(ngram2,(function(x){grepl("[A-Za-z]",x)})),1,prod))
+non.www <- as.logical(apply(sapply(ngram2,(function(x){!grepl("www\\..+\\.",x)})),1,prod))
+non.http <- as.logical(apply(sapply(ngram2,(function(x){!grepl("http:\\..+\\.",x)})),1,prod))
+filt <- clean.words&ascii.words&letter.words&non.www&non.http
+
+ngram2.by_source <- ngram2.by_source[filt,]
+
+ngram2.all_sources <- ngram2.by_source%>%
+    group_by(Word)%>%
+    summarize(Frequency = sum(Frequency))%>%
+    arrange(desc(Frequency))
+ngram2 <- ngram2.by_source%>%
+    spread(Source,Frequency)%>%
+    inner_join(ngram2.all_sources,by = 'Word')%>%
+    select(c(Word,Frequency,blogs,news,twitter))%>%
+    rename(Total = Frequency, Blogs = blogs, News = news, Twitter = twitter)%>%
+    arrange(desc(Total))%>%
+    mutate_all(funs(replace(., is.na(.), 0)))
+
+w50<- ngram2%>%
+    mutate(Influence = 100*Total/sum(Total))%>%
+    mutate(Influence.Combined = cumsum(Influence))%>%
+    filter(Influence.Combined < 50)%>%
+    (function(x){dim(x)[1]+1})
+
+w90<- ngram2%>%
+    mutate(Influence = 100*Total/sum(Total))%>%
+    mutate(Influence.Combined = cumsum(Influence))%>%
+    filter(Influence.Combined < 90)%>%
+    (function(x){dim(x)[1]+1})
+
+ngram2%>%
+    head(10)%>%
+    kable("html") %>%
+    kable_styling(bootstrap_options = c("striped", "condensed","bordered"),full_width = T)
+```
+
+Here, we'll need `r w50` and `r w90` 2-grams to cover 50% and 90% of all instances. Checking the coverage of the 100 more frequent 2-gram we notice the possibility to build longer phrases. We didn't check the existence of the 3-grams (or n-grams), but it's a guess to implement in the final algorithm.
+```{r 2gram_plot, echo = FALSE}
+ngram2[1:100,]%>%
+    separate(Word, c("Word1", "Word2"), sep = " ")%>%
+    graph_from_data_frame() %>%
+    ggraph(layout = "fr") +
+    geom_edge_link(arrow = arrow(length = unit(3, 'mm')),end_cap = circle(2, 'mm'),aes(edge_alpha = Total)) +
+    geom_node_point(color = "darkslategray4", size = 3) +
+    geom_node_text(color = "red", aes(label = name), vjust = 1.8, size=3) +
+    theme_bw() + 
+    ggtitle('100 most common words combinations')+
+    theme(axis.title.x=element_blank(),
+          axis.text.x=element_blank(),
+          axis.ticks.x=element_blank(),
+          axis.title.y=element_blank(),
+          axis.text.y=element_blank(),
+          axis.ticks.y=element_blank(),
+          panel.grid.major = element_blank(), 
+          panel.grid.minor = element_blank())
+```
+
+##### Removing stopwords
+Removing 2-grams constructed by 2 stopwords we get
+```{r 2gram_nonstop, echo = FALSE}
+# Stop words
+n2 <- ngram2%>%
+    separate(Word, c("Word1", "Word2"), sep = " ")%>%
+    select(c("Word1", "Word2"))
+sw1 <- (n2$Word1 %in% stop_words$word)
+sw2 <- (n2$Word2 %in% stop_words$word)
+
+ngram2[!(sw1&sw2),]%>%
+    head(10)%>%
+    kable("html") %>%
+    kable_styling(bootstrap_options = c("striped", "condensed","bordered"),full_width = T)
+
+w50<- ngram2[!(sw1&sw2),]%>%
+    mutate(Influence = 100*Total/sum(Total))%>%
+    mutate(Influence.Combined = cumsum(Influence))%>%
+    filter(Influence.Combined < 50)%>%
+    (function(x){dim(x)[1]+1})
+
+w90<- ngram2[!(sw1&sw2),]%>%
+    mutate(Influence = 100*Total/sum(Total))%>%
+    mutate(Influence.Combined = cumsum(Influence))%>%
+    filter(Influence.Combined < 90)%>%
+    (function(x){dim(x)[1]+1})
+```
+
+To cover 50% and 90% of the 2-grams listed we'll need respectively the `r w50` and `r w90` most common combinations. And linking the 2-grams by frequency we get
+```{r 2gramnonstop_plot, echo = FALSE}
+ngram2[!(sw1&sw2),]%>%
+    (function(x){x[1:100,]})%>%
+    separate(Word, c("Word1", "Word2"), sep = " ")%>%
+    graph_from_data_frame() %>%
+    ggraph(layout = "fr") +
+    geom_edge_link(arrow = arrow(length = unit(3, 'mm')),end_cap = circle(2, 'mm'),aes(edge_alpha = Total)) +
+    geom_node_point(color = "darkslategray4", size = 3) +
+    geom_node_text(color = "red", aes(label = name), vjust = 1.8, size=3) +
+    theme_bw() + 
+    ggtitle('100 most common words combinations')+
+    theme(axis.title.x=element_blank(),
+          axis.text.x=element_blank(),
+          axis.ticks.x=element_blank(),
+          axis.title.y=element_blank(),
+          axis.text.y=element_blank(),
+          axis.ticks.y=element_blank(),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank())
+```
+
+### Predictor's criteria
+
+Based on the probability of a word given a n-gram we're going to build the predictor. There are some things to study like how long does the n-gram should be, and also improve the filter's capacibility, e.g. for people names and for non-english words.
