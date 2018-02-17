@@ -7,7 +7,7 @@ is.english <- function(str){
     str
 }
 is.ascii <- function(str) {
-    #!grepl("[áàãäéèëíìïóòõöúùüçñ]", tolower(str))
+    #!grepl("[áàãäéèëíìïóòõöúùüçčȼñ]", tolower(str))
     grepl("[!-~]", tolower(str))
 }
 
