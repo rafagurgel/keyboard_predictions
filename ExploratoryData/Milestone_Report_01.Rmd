@@ -45,7 +45,7 @@ setwd("~/Documents/Courses/Data Science 10 - Capstone")
 path<- as_tibble(t(sapply(c("blogs","news","twitter"),(function(x){paste0("data/en_US/en_US.",x,".txt")}))))
 
 con <- lapply(path,file, "r")
-text.data <- lapply(con,readLines,1000)
+text.data <- lapply(con,readLines,encoding="UTF-8")
 invisible(lapply(con,close))
 
 text.data<-data_frame(Source = rep(names(text.data), sapply(text.data, length)),
